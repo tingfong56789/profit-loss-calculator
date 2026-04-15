@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 function fmt(n) {
   if (Math.abs(n) >= 100000000) return "NT$" + (n / 100000000).toFixed(2) + "億";
@@ -123,6 +123,16 @@ export default function AIPricingCalc() {
     creditPack0: true, creditPack1: true, creditPack2: true,
     creditsPerTurn: true, creditsPerMonthPerUser: true, consumptionRate: true,
   });
+
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== "undefined" && window.innerWidth < 640
+  );
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 640);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   const toggle = (key) => setEnabled(s => ({ ...s, [key]: !s[key] }));
 
   const apiCostPerTurn =
@@ -296,7 +306,7 @@ export default function AIPricingCalc() {
     <div style={{
       fontFamily: "'Noto Sans TC', 'SF Pro Display', -apple-system, sans-serif",
       background: "linear-gradient(160deg, #f8fafc 0%, #eef2f7 40%, #f8fafc 100%)",
-      color: "#1a202c", minHeight: "100vh", padding: "28px 16px",
+      color: "#1a202c", minHeight: "100vh", padding: isMobile ? "16px 10px" : "28px 16px",
     }}>
       <div style={{ maxWidth: 820, margin: "0 auto" }}>
         {/* Header */}
@@ -306,7 +316,7 @@ export default function AIPricingCalc() {
             color: "#f59e0b", background: "rgba(245,158,11,0.1)",
             padding: "4px 12px", borderRadius: 6, marginBottom: 10,
           }}>AI 軍師 · 對話包定價模擬器 v2</div>
-          <h1 style={{ fontSize: 24, fontWeight: 700, margin: "8px 0 0", color: "#1a202c", lineHeight: 1.3 }}>
+          <h1 style={{ fontSize: isMobile ? 19 : 24, fontWeight: 700, margin: "8px 0 0", color: "#1a202c", lineHeight: 1.3 }}>
             完整損益模擬（含流失 · 擴容 · 續購）
           </h1>
           <p style={{ color: "#94a3b8", fontSize: 12, margin: "6px 0 0" }}>
@@ -346,7 +356,7 @@ export default function AIPricingCalc() {
             <span style={{ fontSize: 15 }}>⚡</span>
             <span style={{ fontSize: 13, fontWeight: 600, color: "#1a202c" }}>① 每輪對話 API 成本</span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10, marginBottom: 12 }}>
             <NumInput label="AI 降噪" value={costDenoise} onChange={setCostDenoise} prefix="NT$" suffix="/輪" width={55} small on={enabled.costDenoise} onToggle={() => toggle("costDenoise")} />
             <NumInput label="Whisper STT" value={costWhisper} onChange={setCostWhisper} prefix="NT$" suffix="/輪" width={55} small on={enabled.costWhisper} onToggle={() => toggle("costWhisper")} />
             <NumInput label="LLM 推理" value={costLLM} onChange={setCostLLM} prefix="NT$" suffix="/輪" width={55} small on={enabled.costLLM} onToggle={() => toggle("costLLM")} />
@@ -368,7 +378,7 @@ export default function AIPricingCalc() {
             <span style={{ fontSize: 15 }}>📦</span>
             <span style={{ fontSize: 13, fontWeight: 600, color: "#1a202c" }}>② 對話包方案設計</span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 10, marginBottom: 12 }}>
             {packs.map((pack, i) => {
               const packOn = enabled[`pack${i}`];
               const apiCost = pack.turns * turnsUsedPct * apiCostPerTurn;
@@ -431,7 +441,7 @@ export default function AIPricingCalc() {
               單點 API 成本 NT${data.apiCostPerCredit.toFixed(3)} · 加權單點售價 NT${data.avgPricePerCredit.toFixed(3)}
             </span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 10, marginBottom: 12 }}>
             {creditPacks.map((pack, i) => {
               const packOn = enabled[`creditPack${i}`];
               const unitPrice = pack.credits > 0 ? pack.price / pack.credits : 0;
@@ -493,7 +503,7 @@ export default function AIPricingCalc() {
             <span style={{ fontSize: 15 }}>🎛️</span>
             <span style={{ fontSize: 13, fontWeight: 600, color: "#1a202c" }}>③ 營運基礎參數</span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14 }}>
             <div>
               <NumInput label="每月基礎固定成本（人事/辦公/雜支，不含 GPU）" value={baseCost} onChange={setBaseCost} prefix="NT$" width={130} small on={enabled.baseCost} onToggle={() => toggle("baseCost")} />
               <div style={{ display: "flex", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
@@ -521,7 +531,7 @@ export default function AIPricingCalc() {
               ④ {activeTab === "credit" ? "用戶流失與點數消耗" : "用戶流失與續購行為"}
             </span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 14 }}>
             <div style={{ opacity: enabled.churnRate ? 1 : 0.45 }}>
               <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, display: "flex", alignItems: "center", gap: 5 }}>
                 <Dot on={enabled.churnRate} onClick={() => toggle("churnRate")} />
@@ -595,7 +605,7 @@ export default function AIPricingCalc() {
           </div>
           {activeTab === "credit" && (
             <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #e2e8f0" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 14, alignItems: "center" }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 2fr", gap: 14, alignItems: "center" }}>
                 <NumInput label="實際使用率（未用完的點數 = 額外利潤）" value={consumptionRate} onChange={setConsumptionRate} suffix="%" width={50} small
                   tip="100% = 買的點都用完；<100% 模擬點數浪費/過期" on={enabled.consumptionRate} onToggle={() => toggle("consumptionRate")} />
                 <div style={{ fontSize: 11, color: "#64748b" }}>
@@ -614,7 +624,7 @@ export default function AIPricingCalc() {
             <span style={{ fontSize: 15 }}>🖥️</span>
             <span style={{ fontSize: 13, fontWeight: 600, color: "#1a202c" }}>⑤ GPU 伺服器階梯擴容</span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 14 }}>
             <NumInput label="每台伺服器承載用戶數" value={usersPerServer} onChange={setUsersPerServer} suffix="人/台" width={70} small
               tip="AWS g6e.2xlarge 約 50-100 並發" on={enabled.gpu} onToggle={() => toggle("gpu")} />
             <NumInput label="每台伺服器月費" value={serverCost} onChange={setServerCost} prefix="NT$" suffix="/月" width={80} small
@@ -671,7 +681,7 @@ export default function AIPricingCalc() {
             </span>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, opacity: enabled.monthlyGrowth ? 0.4 : 1 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10, opacity: enabled.monthlyGrowth ? 0.4 : 1 }}>
             {["Q1（1-3月）", "Q2（4-6月）", "Q3（7-9月）", "Q4（10-12月）"].map((label, qi) => {
               const colors = ["#f59e0b", "#3b82f6", "#a78bfa", "#34d399"];
               const g = qGrowth[qi];
@@ -712,7 +722,7 @@ export default function AIPricingCalc() {
         </div>
 
         {/* ===== KEY METRICS ===== */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
           {[
             activeTab === "credit"
               ? { label: "每用戶月毛利", value: `${fmtFull(Math.round(data.creditMarginPerUser))} (${data.creditMarginPct.toFixed(0)}%)`, color: data.creditMarginPerUser >= 0 ? "#34d399" : "#ef4444" }
