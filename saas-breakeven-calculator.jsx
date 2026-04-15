@@ -7,6 +7,13 @@ function fmt(n) {
 }
 function fmtFull(n) { return "NT$" + Math.round(n).toLocaleString("en-US"); }
 
+function parseIntSafe(val) {
+  return parseInt(String(val ?? "").replace(/,/g, ""), 10);
+}
+function parseFloatSafe(val) {
+  return parseFloat(String(val ?? "").replace(/,/g, ""));
+}
+
 const STORAGE_PREFIX = "saas-calc-v1:";
 
 function usePersistentState(key, initial) {
@@ -132,7 +139,7 @@ export default function AIPricingCalc() {
   const [creditPackMix, setCreditPackMix] = usePersistentState("creditPackMix", [30, 50, 20]);
   const [creditsPerTurn, setCreditsPerTurn] = usePersistentState("creditsPerTurn", "10");
   const [creditsPerMonthPerUser, setCreditsPerMonthPerUser] = usePersistentState("creditsPerMonthPerUser", "500");
-  const [consumptionRate, setConsumptionRate] = usePersistentState("consumptionRate", "100");
+  const [consumptionRate, setConsumptionRate] = usePersistentState("consumptionRate", "70");
 
   // Subscription-mode state
   const [subPlans, setSubPlans] = usePersistentState("subPlans", [
@@ -192,17 +199,17 @@ export default function AIPricingCalc() {
   const toggle = (key) => setEnabled(s => ({ ...s, [key]: !s[key] }));
 
   const apiCostPerTurn =
-    (enabled.costWhisper ? (parseFloat(costWhisper) || 0) : 0) +
-    (enabled.costLLM ? (parseFloat(costLLM) || 0) : 0) +
-    (enabled.costTTS ? (parseFloat(costTTS) || 0) : 0) +
-    (enabled.costDenoise ? (parseFloat(costDenoise) || 0) : 0);
+    (enabled.costWhisper ? (parseFloatSafe(costWhisper) || 0) : 0) +
+    (enabled.costLLM ? (parseFloatSafe(costLLM) || 0) : 0) +
+    (enabled.costTTS ? (parseFloatSafe(costTTS) || 0) : 0) +
+    (enabled.costDenoise ? (parseFloatSafe(costDenoise) || 0) : 0);
 
-  const fixedBase = enabled.baseCost ? (parseInt(String(baseCost).replace(/,/g, ""), 10) || 0) : 0;
-  const startUsers = enabled.initUsers ? (parseInt(initUsers, 10) || 0) : 0;
-  const turnsUsedPct = enabled.avgTurnsUsed ? ((parseFloat(avgTurnsUsed) || 70) / 100) : 1;
-  const uPerServer = parseInt(usersPerServer, 10) || 100;
-  const sCost = enabled.gpu ? (parseInt(String(serverCost).replace(/,/g, ""), 10) || 0) : 0;
-  const rCycle = parseFloat(repurchaseCycle) || 1;
+  const fixedBase = enabled.baseCost ? (parseIntSafe(baseCost) || 0) : 0;
+  const startUsers = enabled.initUsers ? (parseIntSafe(initUsers) || 0) : 0;
+  const turnsUsedPct = (parseFloatSafe(avgTurnsUsed) || 70) / 100;
+  const uPerServer = parseIntSafe(usersPerServer) || 100;
+  const sCost = enabled.gpu ? (parseIntSafe(serverCost) || 0) : 0;
+  const rCycle = parseFloatSafe(repurchaseCycle) || 1;
 
   const data = (() => {
     const qRates = enabled.monthlyGrowth
@@ -222,9 +229,9 @@ export default function AIPricingCalc() {
     });
 
     // Credit-mode pricing
-    const cpt = enabled.creditsPerTurn ? (parseFloat(creditsPerTurn) || 1) : 1;
-    const cpu = enabled.creditsPerMonthPerUser ? (parseFloat(creditsPerMonthPerUser) || 0) : 0;
-    const consRate = enabled.consumptionRate ? ((parseFloat(consumptionRate) || 100) / 100) : 1;
+    const cpt = enabled.creditsPerTurn ? (parseFloatSafe(creditsPerTurn) || 1) : 1;
+    const cpu = enabled.creditsPerMonthPerUser ? (parseFloatSafe(creditsPerMonthPerUser) || 0) : 0;
+    const consRate = (parseFloatSafe(consumptionRate) || 70) / 100;
     const effCreditMix = creditPackMix.map((m, i) => enabled[`creditPack${i}`] ? (m || 0) : 0);
     const totalCreditMixPct = effCreditMix.reduce((a, b) => a + b, 0) || 100;
     let weightedCredits = 0, weightedPrice = 0;
@@ -250,7 +257,7 @@ export default function AIPricingCalc() {
       wMonthlyPrice += p.monthlyPrice * pct;
       wIncludedTurns += p.includedTurns * pct;
     });
-    const subUse = enabled.subUsageRate ? ((parseFloat(subUsageRate) || 70) / 100) : 1;
+    const subUse = (parseFloatSafe(subUsageRate) || 70) / 100;
     const turnsPerSubUser = wIncludedTurns * subUse;
     const apiCostPerSubUser = turnsPerSubUser * apiCostPerTurn;
 
@@ -259,17 +266,17 @@ export default function AIPricingCalc() {
     const monthlyPct = 1 - annualPct;
     const recognizedArpu = wMonthlyPrice * (monthlyPct + (1 - annualDisc) * annualPct);
 
-    const annualChurnNum = enabled.annual ? ((parseFloat(annualChurn) || 0) / 100) : churn;
+    const annualChurnNum = enabled.annual ? ((parseFloatSafe(annualChurn) || 0) / 100) : churn;
     const blendedChurn = churn * monthlyPct + annualChurnNum * annualPct;
 
-    const overUsers = enabled.overage ? ((parseFloat(overageUserPct) || 0) / 100) : 0;
-    const overPacks = enabled.overage ? (parseFloat(overagePacksPerUser) || 0) : 0;
-    const overT = parseFloat(overageTurns) || 0;
-    const overP = parseFloat(overagePrice) || 0;
+    const overUsers = enabled.overage ? ((parseFloatSafe(overageUserPct) || 0) / 100) : 0;
+    const overPacks = enabled.overage ? (parseFloatSafe(overagePacksPerUser) || 0) : 0;
+    const overT = parseFloatSafe(overageTurns) || 0;
+    const overP = parseFloatSafe(overagePrice) || 0;
     const overageRevPerUser = overUsers * overPacks * overP;
     const overageApiPerUser = overUsers * overPacks * overT * apiCostPerTurn;
 
-    const trialT = enabled.trial ? (parseFloat(trialTurns) || 0) : 0;
+    const trialT = enabled.trial ? (parseFloatSafe(trialTurns) || 0) : 0;
     const trialConv = enabled.trial ? Math.max(0.01, trialConversion / 100) : 1;
     const trialCostPerSignup = trialT * apiCostPerTurn;
 
@@ -278,12 +285,15 @@ export default function AIPricingCalc() {
     const subMarginPerUser = subArpu - subCogsPerUser;
     const subMarginPct = subArpu > 0 ? (subMarginPerUser / subArpu * 100) : 0;
 
-    const effChurn = activeTab === "sub" ? blendedChurn : churn;
-
     let cumRevenue = 0;
     let cumCost = 0;
     let breakEvenMonth = null;
     let activeUsers = startUsers;
+
+    // Sub-mode cohort pools (floats, tracked separately so annual users accumulate
+    // over time as monthly users churn out faster).
+    let monthlyPool = activeTab === "sub" ? startUsers * monthlyPct : 0;
+    let annualPool = activeTab === "sub" ? startUsers * annualPct : 0;
 
     // Store monthly new user counts for repurchase calculation
     const newUsersByMonth = [];
@@ -295,29 +305,48 @@ export default function AIPricingCalc() {
       const rate = qRates[qi] || 0;
 
       let newUsersThisMonth;
-      if (i === 0) {
-        newUsersThisMonth = startUsers;
+      if (activeTab === "sub") {
+        if (i === 0) {
+          newUsersThisMonth = startUsers;
+        } else {
+          monthlyPool = monthlyPool * (1 - churn);
+          annualPool = annualPool * (1 - annualChurnNum);
+          const retainedTotal = monthlyPool + annualPool;
+          const grown = Math.max(0, retainedTotal * rate);
+          monthlyPool += grown * monthlyPct;
+          annualPool += grown * annualPct;
+          activeUsers = Math.round(monthlyPool + annualPool);
+          newUsersThisMonth = Math.round(grown);
+        }
       } else {
-        const retained = Math.round(activeUsers * (1 - effChurn));
-        const grown = Math.max(0, Math.round(retained * rate));
-        activeUsers = retained + grown;
-        newUsersThisMonth = grown;
+        if (i === 0) {
+          newUsersThisMonth = startUsers;
+        } else {
+          const retained = Math.round(activeUsers * (1 - churn));
+          const grown = Math.max(0, Math.round(retained * rate));
+          activeUsers = retained + grown;
+          newUsersThisMonth = grown;
+        }
       }
 
       newUsersByMonth.push(newUsersThisMonth);
 
+      let newSignups = 0;
       let purchasesThisMonth;
       let monthRevenue;
       let monthApiCost;
 
       if (activeTab === "sub") {
-        // newUsersThisMonth = new paying subscribers; back-calc total signups
-        // (month 1 startUsers are seeded directly without trial)
-        const newSignups = i === 0 ? newUsersThisMonth : Math.round(newUsersThisMonth / trialConv);
+        // Back-calc signups from new paying (month 0 startUsers seeded directly, no trial cost)
+        newSignups = i === 0 ? newUsersThisMonth : Math.round(newUsersThisMonth / trialConv);
         const trialCost = newSignups * trialCostPerSignup;
-        monthRevenue = activeUsers * subArpu;
+        // Cohort-based revenue uses actual pool sizes (not a constant blend)
+        const monthlyRev = monthlyPool * wMonthlyPrice;
+        const annualRev = annualPool * wMonthlyPrice * (1 - annualDisc);
+        const overageRev = activeUsers * overageRevPerUser;
+        monthRevenue = monthlyRev + annualRev + overageRev;
         monthApiCost = activeUsers * subCogsPerUser + trialCost;
-        purchasesThisMonth = activeUsers;
+        purchasesThisMonth = newSignups;
       } else if (activeTab === "credit") {
         monthRevenue = activeUsers * monthRevenuePerUser;
         monthApiCost = activeUsers * monthApiCostPerUser;
@@ -346,7 +375,11 @@ export default function AIPricingCalc() {
         monthApiCost = avgApiCostPerPurchase * purchasesThisMonth;
       }
 
-      const serversNeeded = Math.max(1, Math.ceil(activeUsers / uPerServer));
+      // GPU scaling: sub mode adds ~half of trial signups (avg occupancy during trial window)
+      const effectiveActiveForGPU = activeTab === "sub"
+        ? activeUsers + Math.round(newSignups * 0.5)
+        : activeUsers;
+      const serversNeeded = Math.max(1, Math.ceil(effectiveActiveForGPU / uPerServer));
       const serverTotalCost = serversNeeded * sCost;
       const monthFixedCost = fixedBase + serverTotalCost;
 
@@ -374,9 +407,17 @@ export default function AIPricingCalc() {
     const creditMarginPct = monthRevenuePerUser > 0
       ? (creditMarginPerUser / monthRevenuePerUser * 100) : 0;
 
+    // Steady-state trial drag: each active user must be "replaced" at rate blendedChurn
+    // per month, and each replacement costs trialCostPerSignup / trialConv (gross-up for
+    // trial dropouts). This is a per-active-user amortized ongoing cost.
+    const subTrialDragPerActive = activeTab === "sub"
+      ? blendedChurn * trialCostPerSignup / trialConv
+      : 0;
+    const subEffMargin = subMarginPerUser - subTrialDragPerActive;
+
     // Lower-bound break-even: base cost + one GPU server (variable scaling not modeled).
     const breakEvenUsers = activeTab === "sub"
-      ? (subMarginPerUser > 0 ? Math.ceil((fixedBase + sCost) / subMarginPerUser) : Infinity)
+      ? (subEffMargin > 0 ? Math.ceil((fixedBase + sCost) / subEffMargin) : Infinity)
       : activeTab === "credit"
       ? (creditMarginPerUser > 0 ? Math.ceil((fixedBase + sCost) / creditMarginPerUser) : Infinity)
       : (grossMarginPerPurchase > 0 ? Math.ceil((fixedBase + sCost) / grossMarginPerPurchase) : Infinity);
@@ -394,27 +435,27 @@ export default function AIPricingCalc() {
 
   const updatePack = (idx, field, val) => {
     const next = [...packs];
-    next[idx] = { ...next[idx], [field]: field === "name" ? val : (parseInt(val, 10) || 0) };
+    next[idx] = { ...next[idx], [field]: field === "name" ? val : (parseIntSafe(val) || 0) };
     setPacks(next);
   };
   const updateMix = (idx, val) => {
-    const next = [...packMix]; next[idx] = parseInt(val, 10) || 0; setPackMix(next);
+    const next = [...packMix]; next[idx] = parseIntSafe(val) || 0; setPackMix(next);
   };
   const updateCreditPack = (idx, field, val) => {
     const next = [...creditPacks];
-    next[idx] = { ...next[idx], [field]: field === "name" ? val : (parseInt(val, 10) || 0) };
+    next[idx] = { ...next[idx], [field]: field === "name" ? val : (parseIntSafe(val) || 0) };
     setCreditPacks(next);
   };
   const updateCreditMix = (idx, val) => {
-    const next = [...creditPackMix]; next[idx] = parseInt(val, 10) || 0; setCreditPackMix(next);
+    const next = [...creditPackMix]; next[idx] = parseIntSafe(val) || 0; setCreditPackMix(next);
   };
   const updateSubPlan = (idx, field, val) => {
     const next = [...subPlans];
-    next[idx] = { ...next[idx], [field]: field === "name" ? val : (parseInt(val, 10) || 0) };
+    next[idx] = { ...next[idx], [field]: field === "name" ? val : (parseIntSafe(val) || 0) };
     setSubPlans(next);
   };
   const updateSubMix = (idx, val) => {
-    const next = [...subPlanMix]; next[idx] = parseInt(val, 10) || 0; setSubPlanMix(next);
+    const next = [...subPlanMix]; next[idx] = parseIntSafe(val) || 0; setSubPlanMix(next);
   };
 
   const maxChart = Math.max(...data.months.map(m => Math.max(m.cumRevenue, m.cumCost)), 1);
@@ -561,7 +602,7 @@ export default function AIPricingCalc() {
               );
             })}
           </div>
-          <NumInput label="用戶平均使用率（未用完的輪數 = 額外利潤）" value={avgTurnsUsed} onChange={setAvgTurnsUsed} suffix="%" width={50} small on={enabled.avgTurnsUsed} onToggle={() => toggle("avgTurnsUsed")} />
+          <NumInput label="用戶平均使用率（未用完的輪數 = 額外利潤）" value={avgTurnsUsed} onChange={setAvgTurnsUsed} suffix="%" width={50} small />
         </div>
         )}
 
@@ -644,7 +685,7 @@ export default function AIPricingCalc() {
           <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 10, marginBottom: 12 }}>
             {subPlans.map((plan, i) => {
               const subOn = enabled[`sub${i}`];
-              const usagePct = enabled.subUsageRate ? ((parseFloat(subUsageRate) || 70) / 100) : 1;
+              const usagePct = (parseFloatSafe(subUsageRate) || 70) / 100;
               const apiCost = plan.includedTurns * usagePct * apiCostPerTurn;
               const margin = plan.monthlyPrice - apiCost;
               const marginPct = plan.monthlyPrice > 0 ? (margin / plan.monthlyPrice * 100) : 0;
@@ -680,10 +721,10 @@ export default function AIPricingCalc() {
                   </div>
                   <div style={{ marginTop: 8, padding: "6px 0 0", borderTop: "1px solid #e2e8f0", fontSize: 11 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
-                      <span style={{ color: "#64748b" }}>API 成本</span><span style={{ color: "#ef4444" }}>{fmt(apiCost)}</span>
+                      <span style={{ color: "#64748b" }}>API 成本（月繳）</span><span style={{ color: "#ef4444" }}>{fmt(apiCost)}</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <span style={{ color: "#64748b" }}>單用戶月毛利</span>
+                      <span style={{ color: "#64748b" }}>月繳毛利 (list)</span>
                       <span style={{ color: margin >= 0 ? "#34d399" : "#ef4444", fontWeight: 600 }}>{fmt(margin)} ({marginPct.toFixed(0)}%)</span>
                     </div>
                   </div>
@@ -691,7 +732,10 @@ export default function AIPricingCalc() {
               );
             })}
           </div>
-          <NumInput label="平均使用率（未用完的輪數 = 額外利潤）" value={subUsageRate} onChange={setSubUsageRate} suffix="%" width={50} small on={enabled.subUsageRate} onToggle={() => toggle("subUsageRate")} />
+          <div style={{ fontSize: 10, color: "#94a3b8", marginBottom: 8 }}>
+            💡 上方卡片顯示的是 list price（純月繳、未套年繳折扣、不含超量加購與試用成本）。實際每用戶月毛利請看下方 KPI。
+          </div>
+          <NumInput label="平均使用率（未用完的輪數 = 額外利潤）" value={subUsageRate} onChange={setSubUsageRate} suffix="%" width={50} small />
           <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #e2e8f0" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
               <Dot on={enabled.overage} onClick={() => toggle("overage")} />
@@ -861,7 +905,7 @@ export default function AIPricingCalc() {
             <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #e2e8f0" }}>
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 2fr", gap: 14, alignItems: "center" }}>
                 <NumInput label="實際使用率（未用完的點數 = 額外利潤）" value={consumptionRate} onChange={setConsumptionRate} suffix="%" width={50} small
-                  tip="100% = 買的點都用完；<100% 模擬點數浪費/過期" on={enabled.consumptionRate} onToggle={() => toggle("consumptionRate")} />
+                  tip="100% = 買的點都用完；<100% 模擬點數浪費/過期" />
                 <div style={{ fontSize: 11, color: "#64748b" }}>
                   每用戶月營收 <span style={{ color: "#34d399", fontWeight: 700 }}>{fmtFull(Math.round(data.monthRevenuePerUser))}</span>
                   {" · "}月 API 成本 <span style={{ color: "#ef4444", fontWeight: 700 }}>{fmtFull(Math.round(data.monthApiCostPerUser))}</span>
@@ -966,7 +1010,7 @@ export default function AIPricingCalc() {
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10, opacity: enabled.monthlyGrowth ? 0.4 : 1 }}>
-            {["Q1（1-3月）", "Q2（4-6月）", "Q3（7-9月）", "Q4（10-12月）"].map((label, qi) => {
+            {["Q1（1-3 月，月成長率）", "Q2（4-6 月，月成長率）", "Q3（7-9 月，月成長率）", "Q4（10-12 月，月成長率）"].map((label, qi) => {
               const colors = ["#f59e0b", "#3b82f6", "#a78bfa", "#34d399"];
               const g = qGrowth[qi];
               const qOn = enabled[`q${qi}`];
@@ -1085,7 +1129,7 @@ export default function AIPricingCalc() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, minWidth: 850 }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid #cbd5e1" }}>
-                  {["月份", "季/成長", "活躍用戶", "新增", activeTab === "credit" ? "等效點包數" : activeTab === "sub" ? "活躍訂閱" : "購買次數", "GPU台數", "營收", "API成本", "固定+GPU", "月損益", "累計損益"].map(h => (
+                  {["月份", "季/成長", "活躍用戶", "新增", activeTab === "credit" ? "等效點包數" : activeTab === "sub" ? "新試用" : "購買次數", "GPU台數", "營收", "API成本", "固定+GPU", "月損益", "累計損益"].map(h => (
                     <th key={h} style={{ padding: "7px 5px", textAlign: "right", color: "#94a3b8", fontWeight: 500, fontSize: 9 }}>{h}</th>
                   ))}
                 </tr>
@@ -1121,7 +1165,7 @@ export default function AIPricingCalc() {
             {activeTab === "credit"
               ? " 等效點包數 = 活躍用戶 × 月消耗點數 ÷ 加權平均點包點數"
               : activeTab === "sub"
-              ? " 活躍訂閱 = 月初留存 × (1 − 混合流失) + 新付費用戶；新 signups = 新付費 ÷ 試用轉換率"
+              ? " 新試用 = 新付費 ÷ 試用轉換率（含試用後未轉換的人）；活躍用戶欄已是月繳+年繳 cohort 合計"
               : " 購買次數 = 新用戶首購 + 舊用戶續購"}
             ｜ 固定+GPU = 基礎成本 + 伺服器擴容費
           </div>
