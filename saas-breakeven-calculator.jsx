@@ -384,6 +384,12 @@ export default function AIPricingCalc() {
       ? cac / monthlyMarginPerUser
       : Infinity;
 
+    // Margin summaries (no loop dependency — safe to compute pre-loop)
+    const grossMarginPerPurchase = avgRevenuePerPurchase - avgApiCostPerPurchase;
+    const grossMarginPct = avgRevenuePerPurchase > 0 ? (grossMarginPerPurchase / avgRevenuePerPurchase * 100) : 0;
+    const creditMarginPct = monthRevenuePerUser > 0
+      ? (creditMarginPerUser / monthRevenuePerUser * 100) : 0;
+
     // Per-mode unit economics for 3-mode comparison table (computed regardless of activeTab)
     const safeRCycle = Math.max(0.25, rCycle);
     const packPerMonthArpu = avgRevenuePerPurchase * (repRate / safeRCycle);
@@ -558,12 +564,6 @@ export default function AIPricingCalc() {
         monthChurn,
       });
     }
-
-    const grossMarginPerPurchase = avgRevenuePerPurchase - avgApiCostPerPurchase;
-    const grossMarginPct = avgRevenuePerPurchase > 0 ? (grossMarginPerPurchase / avgRevenuePerPurchase * 100) : 0;
-
-    const creditMarginPct = monthRevenuePerUser > 0
-      ? (creditMarginPerUser / monthRevenuePerUser * 100) : 0;
 
     // Steady-state trial drag: each active user must be "replaced" at rate blendedChurn
     // per month, and each replacement costs trialCostPerSignup / trialConv (gross-up for
