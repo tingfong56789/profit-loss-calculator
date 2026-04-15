@@ -112,6 +112,7 @@ export default function AIPricingCalc() {
   const [hrCost, setHrCost] = usePersistentState("hrCost", "60000");
   const [officeCost, setOfficeCost] = usePersistentState("officeCost", "35000");
   const [toolsCost, setToolsCost] = usePersistentState("toolsCost", "5000");
+  const [infraCost, setInfraCost] = usePersistentState("infraCost", "20000");
   const [paymentFeePct, setPaymentFeePct] = usePersistentState("paymentFeePct", "2.8");
   const [refundRate, setRefundRate] = usePersistentState("refundRate", 2);
 
@@ -221,7 +222,7 @@ export default function AIPricingCalc() {
     if (typeof window === "undefined") return;
     const headers = ["月份", "季度", "成長率(%)", "活躍用戶", "新增", "購買/試用", "GPU台數", "營收", "API成本", "固定成本", "行銷費", "手續+退款", "月損益", "累計營收", "累計成本", "累計損益"];
     const rows = data.months.map(m => {
-      const pureFixed = m.monthFixedCost - m.marketingCost;
+      const pureFixed = data.coreFixed;
       return [
         m.month, m.quarter, m.growthRate.toFixed(1),
         m.activeUsers, m.newUsers, m.purchases, m.serversNeeded,
@@ -262,8 +263,10 @@ export default function AIPricingCalc() {
   const hrVal = parseIntSafe(hrCost) || 0;
   const officeVal = parseIntSafe(officeCost) || 0;
   const toolsVal = parseIntSafe(toolsCost) || 0;
+  const infraVal = parseIntSafe(infraCost) || 0;
   const budgetVal = enabled.marketing ? (parseIntSafe(monthlyBudget) || 0) : 0;
-  const fixedBase = hrVal + officeVal + toolsVal + budgetVal;
+  const coreFixed = hrVal + officeVal + toolsVal + infraVal;
+  const fixedBase = coreFixed + budgetVal;
 
   const feeRate = enabled.payment ? ((parseFloatSafe(paymentFeePct) || 0) / 100) : 0;
   const refundR = enabled.payment ? ((refundRate || 0) / 100) : 0;
@@ -594,7 +597,7 @@ export default function AIPricingCalc() {
       // Per-mode comparison
       perModeComparison,
       // Cost breakdown
-      fixedBaseTotal: fixedBase, variableRate,
+      fixedBaseTotal: fixedBase, coreFixed, variableRate,
       marketCeiling, effChurnForLtv,
     };
   })();
@@ -1091,13 +1094,22 @@ export default function AIPricingCalc() {
               固定 {fmtFull(data.fixedBaseTotal)} / 月 + 變動 {(data.variableRate * 100).toFixed(1)}% 營收
             </span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(3, 1fr)", gap: 10, marginBottom: 10 }}>
-            <NumInput label="人事成本" value={hrCost} onChange={setHrCost} prefix="NT$" width={100} small
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: 10, marginBottom: 10 }}>
+            <NumInput label="人事成本" value={hrCost} onChange={setHrCost} prefix="NT$" width={90} small
               tip="工程師 6-12 萬、行銷 4-6 萬、客服 3-5 萬" />
-            <NumInput label="辦公/雜支" value={officeCost} onChange={setOfficeCost} prefix="NT$" width={90} small
+            <NumInput label="辦公/雜支" value={officeCost} onChange={setOfficeCost} prefix="NT$" width={85} small
               tip="辦公空間、水電、雜支" />
-            <NumInput label="第三方工具訂閱" value={toolsCost} onChange={setToolsCost} prefix="NT$" width={80} small
+            <NumInput label="第三方工具訂閱" value={toolsCost} onChange={setToolsCost} prefix="NT$" width={75} small
               tip="Slack、Notion、Analytics、監控工具" />
+            <div>
+              <NumInput label="基礎建設固定成本" value={infraCost} onChange={setInfraCost} prefix="NT$" width={85} small
+                tip="AWS/GCP 主機、資料庫、儲存、CDN 等固定月費" />
+              <div style={{ display: "flex", gap: 3, marginTop: 6, flexWrap: "wrap" }}>
+                {[{ l: "1萬", v: "10000" }, { l: "2萬", v: "20000" }, { l: "3萬", v: "30000" }, { l: "5萬", v: "50000" }].map(c => (
+                  <Chip key={c.v} label={c.l} active={infraCost === c.v} onClick={() => setInfraCost(c.v)} />
+                ))}
+              </div>
+            </div>
           </div>
           <div style={{ paddingTop: 10, borderTop: "1px solid #e2e8f0", display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr", gap: 10, opacity: enabled.payment ? 1 : 0.45 }}>
             <NumInput label="支付平台手續費" value={paymentFeePct} onChange={setPaymentFeePct} suffix="%" width={45} small
@@ -1113,7 +1125,7 @@ export default function AIPricingCalc() {
             </div>
           </div>
           <div style={{ marginTop: 10, fontSize: 10, color: "#94a3b8" }}>
-            💡 固定成本 = 人事 + 辦公 + 工具 + 行銷預算 = {fmtFull(data.fixedBaseTotal)}/月 ｜ 變動成本 = 營收 × (手續費 + 退款率)
+            💡 固定成本 = 人事 + 辦公 + 工具 + 基礎建設 + 行銷預算 = {fmtFull(data.fixedBaseTotal)}/月 ｜ 變動成本 = 營收 × (手續費 + 退款率)
           </div>
         </div>
 
@@ -1529,7 +1541,7 @@ export default function AIPricingCalc() {
               <tbody>
                 {data.months.map(m => {
                   const qc = ["#f59e0b", "#3b82f6", "#a78bfa", "#34d399"][m.quarter - 1];
-                  const pureFixed = m.monthFixedCost - m.marketingCost;
+                  const pureFixed = data.coreFixed;
                   return (
                     <tr key={m.month} style={{ borderBottom: "1px solid #f1f5f9", background: m.month <= 3 ? "rgba(245,158,11,0.03)" : "transparent" }}>
                       <td style={{ padding: "6px 4px", textAlign: "right", color: "#1a202c", fontWeight: m.month <= 3 ? 600 : 400, fontSize: 10 }}>
@@ -1564,7 +1576,7 @@ export default function AIPricingCalc() {
               : activeTab === "sub"
               ? " 新試用 = 新付費 ÷ 試用轉換率（含試用後未轉換的人）"
               : " 購買 = 新用戶首購 + 舊用戶續購"}
-            ｜ 固定 = 人事+辦公+工具 ｜ 行銷 = 月預算 ｜ 手續+退 = 營收 × (手續費%+退款%)
+            ｜ 固定 = 人事+辦公+工具+基礎建設 ｜ 行銷 = 月預算 ｜ 手續+退 = 營收 × (手續費%+退款%)
           </div>
         </div>
 
