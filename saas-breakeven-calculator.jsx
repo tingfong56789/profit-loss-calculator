@@ -112,6 +112,24 @@ export default function AIPricingCalc() {
   const [creditsPerMonthPerUser, setCreditsPerMonthPerUser] = useState("500");
   const [consumptionRate, setConsumptionRate] = useState("100");
 
+  // Subscription-mode state
+  const [subPlans, setSubPlans] = useState([
+    { name: "基礎版", monthlyPrice: 299, includedTurns: 300 },
+    { name: "標準版", monthlyPrice: 799, includedTurns: 1000 },
+    { name: "專業版", monthlyPrice: 1999, includedTurns: 3000 },
+  ]);
+  const [subPlanMix, setSubPlanMix] = useState([50, 35, 15]);
+  const [subUsageRate, setSubUsageRate] = useState("70");
+  const [overageTurns, setOverageTurns] = useState("100");
+  const [overagePrice, setOveragePrice] = useState("99");
+  const [overageUserPct, setOverageUserPct] = useState("20");
+  const [overagePacksPerUser, setOveragePacksPerUser] = useState("1.5");
+  const [annualAdoption, setAnnualAdoption] = useState(30);
+  const [annualDiscount, setAnnualDiscount] = useState(20);
+  const [annualChurn, setAnnualChurn] = useState("2");
+  const [trialTurns, setTrialTurns] = useState("10");
+  const [trialConversion, setTrialConversion] = useState(35);
+
   // Per-variable enable/disable (disabled → neutral value substituted in calc)
   const [enabled, setEnabled] = useState({
     costDenoise: true, costWhisper: true, costLLM: true, costTTS: true,
@@ -122,6 +140,8 @@ export default function AIPricingCalc() {
     pack0: true, pack1: true, pack2: true,
     creditPack0: true, creditPack1: true, creditPack2: true,
     creditsPerTurn: true, creditsPerMonthPerUser: true, consumptionRate: true,
+    sub0: true, sub1: true, sub2: true,
+    subUsageRate: true, overage: true, annual: true, trial: true,
   });
 
   const [isMobile, setIsMobile] = useState(
@@ -184,6 +204,46 @@ export default function AIPricingCalc() {
     const monthApiCostPerUser = cpu * consRate * apiCostPerCredit;
     const creditMarginPerUser = monthRevenuePerUser - monthApiCostPerUser;
 
+    // Sub-mode pricing
+    const effSubMix = subPlanMix.map((m, i) => enabled[`sub${i}`] ? (m || 0) : 0);
+    const totalSubMix = effSubMix.reduce((a, b) => a + b, 0) || 100;
+    let wMonthlyPrice = 0;
+    let wIncludedTurns = 0;
+    subPlans.forEach((p, i) => {
+      const pct = effSubMix[i] / totalSubMix;
+      wMonthlyPrice += p.monthlyPrice * pct;
+      wIncludedTurns += p.includedTurns * pct;
+    });
+    const subUse = enabled.subUsageRate ? ((parseFloat(subUsageRate) || 70) / 100) : 1;
+    const turnsPerSubUser = wIncludedTurns * subUse;
+    const apiCostPerSubUser = turnsPerSubUser * apiCostPerTurn;
+
+    const annualPct = enabled.annual ? annualAdoption / 100 : 0;
+    const annualDisc = enabled.annual ? annualDiscount / 100 : 0;
+    const monthlyPct = 1 - annualPct;
+    const recognizedArpu = wMonthlyPrice * (monthlyPct + (1 - annualDisc) * annualPct);
+
+    const annualChurnNum = enabled.annual ? ((parseFloat(annualChurn) || 0) / 100) : churn;
+    const blendedChurn = churn * monthlyPct + annualChurnNum * annualPct;
+
+    const overUsers = enabled.overage ? ((parseFloat(overageUserPct) || 0) / 100) : 0;
+    const overPacks = enabled.overage ? (parseFloat(overagePacksPerUser) || 0) : 0;
+    const overT = parseFloat(overageTurns) || 0;
+    const overP = parseFloat(overagePrice) || 0;
+    const overageRevPerUser = overUsers * overPacks * overP;
+    const overageApiPerUser = overUsers * overPacks * overT * apiCostPerTurn;
+
+    const trialT = enabled.trial ? (parseFloat(trialTurns) || 0) : 0;
+    const trialConv = enabled.trial ? Math.max(0.01, trialConversion / 100) : 1;
+    const trialCostPerSignup = trialT * apiCostPerTurn;
+
+    const subArpu = recognizedArpu + overageRevPerUser;
+    const subCogsPerUser = apiCostPerSubUser + overageApiPerUser;
+    const subMarginPerUser = subArpu - subCogsPerUser;
+    const subMarginPct = subArpu > 0 ? (subMarginPerUser / subArpu * 100) : 0;
+
+    const effChurn = activeTab === "sub" ? blendedChurn : churn;
+
     let cumRevenue = 0;
     let cumCost = 0;
     let breakEvenMonth = null;
@@ -202,7 +262,7 @@ export default function AIPricingCalc() {
       if (i === 0) {
         newUsersThisMonth = startUsers;
       } else {
-        const retained = Math.round(activeUsers * (1 - churn));
+        const retained = Math.round(activeUsers * (1 - effChurn));
         const grown = Math.max(0, Math.round(retained * rate));
         activeUsers = retained + grown;
         newUsersThisMonth = grown;
@@ -214,7 +274,15 @@ export default function AIPricingCalc() {
       let monthRevenue;
       let monthApiCost;
 
-      if (activeTab === "credit") {
+      if (activeTab === "sub") {
+        // newUsersThisMonth = new paying subscribers; back-calc total signups
+        // (month 1 startUsers are seeded directly without trial)
+        const newSignups = i === 0 ? newUsersThisMonth : Math.round(newUsersThisMonth / trialConv);
+        const trialCost = newSignups * trialCostPerSignup;
+        monthRevenue = activeUsers * subArpu;
+        monthApiCost = activeUsers * subCogsPerUser + trialCost;
+        purchasesThisMonth = activeUsers;
+      } else if (activeTab === "credit") {
         monthRevenue = activeUsers * monthRevenuePerUser;
         monthApiCost = activeUsers * monthApiCostPerUser;
         purchasesThisMonth = avgCreditsPerPack > 0
@@ -271,7 +339,9 @@ export default function AIPricingCalc() {
       ? (creditMarginPerUser / monthRevenuePerUser * 100) : 0;
 
     // Lower-bound break-even: base cost + one GPU server (variable scaling not modeled).
-    const breakEvenUsers = activeTab === "credit"
+    const breakEvenUsers = activeTab === "sub"
+      ? (subMarginPerUser > 0 ? Math.ceil((fixedBase + sCost) / subMarginPerUser) : Infinity)
+      : activeTab === "credit"
       ? (creditMarginPerUser > 0 ? Math.ceil((fixedBase + sCost) / creditMarginPerUser) : Infinity)
       : (grossMarginPerPurchase > 0 ? Math.ceil((fixedBase + sCost) / grossMarginPerPurchase) : Infinity);
 
@@ -280,6 +350,9 @@ export default function AIPricingCalc() {
       grossMarginPct, breakEvenUsers, breakEvenMonth, months: monthsData,
       avgPricePerCredit, apiCostPerCredit, creditMarginPerUser, creditMarginPct,
       monthRevenuePerUser, monthApiCostPerUser,
+      subArpu, subCogsPerUser, subMarginPerUser, subMarginPct,
+      wMonthlyPrice, wIncludedTurns, recognizedArpu, blendedChurn,
+      overageRevPerUser, overageApiPerUser,
     };
   })();
 
@@ -298,6 +371,14 @@ export default function AIPricingCalc() {
   };
   const updateCreditMix = (idx, val) => {
     const next = [...creditPackMix]; next[idx] = parseInt(val, 10) || 0; setCreditPackMix(next);
+  };
+  const updateSubPlan = (idx, field, val) => {
+    const next = [...subPlans];
+    next[idx] = { ...next[idx], [field]: field === "name" ? val : (parseInt(val, 10) || 0) };
+    setSubPlans(next);
+  };
+  const updateSubMix = (idx, val) => {
+    const next = [...subPlanMix]; next[idx] = parseInt(val, 10) || 0; setSubPlanMix(next);
   };
 
   const maxChart = Math.max(...data.months.map(m => Math.max(m.cumRevenue, m.cumCost)), 1);
@@ -333,6 +414,7 @@ export default function AIPricingCalc() {
           {[
             { k: "pack", label: "📦 方案計價", color: "#f59e0b" },
             { k: "credit", label: "⭐ 點數計價", color: "#34d399" },
+            { k: "sub", label: "💎 訂閱制", color: "#a78bfa" },
           ].map(t => {
             const on = activeTab === t.k;
             return (
@@ -497,6 +579,87 @@ export default function AIPricingCalc() {
         </div>
         )}
 
+        {/* ===== 2. Subscription Plan Design ===== */}
+        {activeTab === "sub" && (
+        <div style={{ ...card, marginBottom: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <span style={{ fontSize: 15 }}>💎</span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "#1a202c" }}>② 訂閱方案設計</span>
+            <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: "auto" }}>
+              加權月費 NT${Math.round(data.wMonthlyPrice)} · 加權含輪 {Math.round(data.wIncludedTurns)}
+            </span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 10, marginBottom: 12 }}>
+            {subPlans.map((plan, i) => {
+              const subOn = enabled[`sub${i}`];
+              const usagePct = enabled.subUsageRate ? ((parseFloat(subUsageRate) || 70) / 100) : 1;
+              const apiCost = plan.includedTurns * usagePct * apiCostPerTurn;
+              const margin = plan.monthlyPrice - apiCost;
+              const marginPct = plan.monthlyPrice > 0 ? (margin / plan.monthlyPrice * 100) : 0;
+              return (
+                <div key={i} style={{ background: "#f8fafc", borderRadius: 12, padding: 12, border: "1px solid #e2e8f0", opacity: subOn ? 1 : 0.45 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                    <Dot on={subOn} onClick={() => toggle(`sub${i}`)} />
+                    <input value={plan.name} onChange={e => updateSubPlan(i, "name", e.target.value)} disabled={!subOn}
+                      style={{ background: "transparent", border: "none", borderBottom: "1px solid #cbd5e1", color: "#1a202c", fontSize: 13, fontWeight: 700, flex: 1, minWidth: 0, padding: "2px 0 4px", outline: "none", textDecoration: subOn ? "none" : "line-through" }} />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {[
+                      { l: "月費", f: "monthlyPrice", v: plan.monthlyPrice, pre: "NT$" },
+                      { l: "包含輪數", f: "includedTurns", v: plan.includedTurns },
+                    ].map(r => (
+                      <div key={r.f} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: 11, color: "#64748b" }}>{r.l}</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                          {r.pre && <span style={{ fontSize: 10, color: "#64748b" }}>{r.pre}</span>}
+                          <input value={r.v} onChange={e => updateSubPlan(i, r.f, e.target.value)}
+                            style={{ background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: 6, padding: "3px 6px", fontSize: 13, fontWeight: 600, color: "#1a202c", width: 65, textAlign: "right", outline: "none" }} />
+                        </div>
+                      </div>
+                    ))}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: 11, color: "#64748b" }}>用戶佔比</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                        <input value={subPlanMix[i]} onChange={e => updateSubMix(i, e.target.value)}
+                          style={{ background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: 6, padding: "3px 6px", fontSize: 13, fontWeight: 600, color: "#1a202c", width: 35, textAlign: "right", outline: "none" }} />
+                        <span style={{ fontSize: 10, color: "#64748b" }}>%</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 8, padding: "6px 0 0", borderTop: "1px solid #e2e8f0", fontSize: 11 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                      <span style={{ color: "#64748b" }}>API 成本</span><span style={{ color: "#ef4444" }}>{fmt(apiCost)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "#64748b" }}>單用戶月毛利</span>
+                      <span style={{ color: margin >= 0 ? "#34d399" : "#ef4444", fontWeight: 600 }}>{fmt(margin)} ({marginPct.toFixed(0)}%)</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <NumInput label="平均使用率（未用完的輪數 = 額外利潤）" value={subUsageRate} onChange={setSubUsageRate} suffix="%" width={50} small on={enabled.subUsageRate} onToggle={() => toggle("subUsageRate")} />
+          <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #e2e8f0" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+              <Dot on={enabled.overage} onClick={() => toggle("overage")} />
+              <span onClick={() => toggle("overage")} style={{ fontSize: 12, fontWeight: 600, color: "#64748b", cursor: "pointer", textDecoration: enabled.overage ? "none" : "line-through" }}>
+                超量加購
+              </span>
+              <span style={{ fontSize: 10, color: "#94a3b8" }}>
+                ARPU 額外貢獻 {fmtFull(Math.round(data.overageRevPerUser))}/用戶/月
+              </span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10, opacity: enabled.overage ? 1 : 0.45 }}>
+              <NumInput label="加購包輪數" value={overageTurns} onChange={setOverageTurns} suffix="輪" width={55} small />
+              <NumInput label="加購包售價" value={overagePrice} onChange={setOveragePrice} prefix="NT$" width={55} small />
+              <NumInput label="超量用戶比例" value={overageUserPct} onChange={setOverageUserPct} suffix="%" width={45} small />
+              <NumInput label="平均加購數" value={overagePacksPerUser} onChange={setOveragePacksPerUser} suffix="包/月" width={45} small />
+            </div>
+          </div>
+        </div>
+        )}
+
         {/* ===== 3. Business Params (cost + users) ===== */}
         <div style={{ ...card, marginBottom: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -528,7 +691,7 @@ export default function AIPricingCalc() {
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
             <span style={{ fontSize: 15 }}>🔄</span>
             <span style={{ fontSize: 13, fontWeight: 600, color: "#1a202c" }}>
-              ④ {activeTab === "credit" ? "用戶流失與點數消耗" : "用戶流失與續購行為"}
+              ④ {activeTab === "credit" ? "用戶流失與點數消耗" : activeTab === "sub" ? "用戶流失與訂閱結構" : "用戶流失與續購行為"}
             </span>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 14 }}>
@@ -580,7 +743,7 @@ export default function AIPricingCalc() {
                   </div>
                 </div>
               </>
-            ) : (
+            ) : activeTab === "credit" ? (
               <>
                 <div>
                   <NumInput label="每輪對話消耗點數" value={creditsPerTurn} onChange={setCreditsPerTurn} suffix="點/輪" width={50} small
@@ -601,6 +764,45 @@ export default function AIPricingCalc() {
                   </div>
                 </div>
               </>
+            ) : (
+              <>
+                <div style={{ opacity: enabled.annual ? 1 : 0.45 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, display: "flex", alignItems: "center", gap: 5 }}>
+                    <Dot on={enabled.annual} onClick={() => toggle("annual")} />
+                    <span onClick={() => toggle("annual")} style={{ textDecoration: enabled.annual ? "none" : "line-through", cursor: "pointer" }}>年繳採用率</span>
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 700, color: "#a78bfa" }}>{annualAdoption}%</div>
+                  <input type="range" min={0} max={100} step={1} value={annualAdoption} disabled={!enabled.annual}
+                    onChange={e => setAnnualAdoption(Number(e.target.value))}
+                    style={{ width: "100%", accentColor: "#a78bfa", marginTop: 4 }} />
+                  <div style={{ display: "flex", gap: 3, marginTop: 6, flexWrap: "wrap" }}>
+                    {[0, 15, 30, 50, 80].map(v => (
+                      <Chip key={v} label={`${v}%`} active={annualAdoption === v} onClick={() => setAnnualAdoption(v)} color="#a78bfa" />
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 6 }}>
+                    多少 % 新用戶選年繳
+                  </div>
+                </div>
+                <div style={{ opacity: enabled.annual ? 1 : 0.45 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, display: "flex", alignItems: "center", gap: 5 }}>
+                    <Dot on={enabled.annual} onClick={() => toggle("annual")} />
+                    <span onClick={() => toggle("annual")} style={{ textDecoration: enabled.annual ? "none" : "line-through", cursor: "pointer" }}>年繳折扣</span>
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 700, color: "#a78bfa" }}>{annualDiscount}%</div>
+                  <input type="range" min={0} max={50} step={1} value={annualDiscount} disabled={!enabled.annual}
+                    onChange={e => setAnnualDiscount(Number(e.target.value))}
+                    style={{ width: "100%", accentColor: "#a78bfa", marginTop: 4 }} />
+                  <div style={{ display: "flex", gap: 3, marginTop: 6, flexWrap: "wrap" }}>
+                    {[10, 15, 20, 25, 30].map(v => (
+                      <Chip key={v} label={`${v}%`} active={annualDiscount === v} onClick={() => setAnnualDiscount(v)} color="#a78bfa" />
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 6 }}>
+                    年繳折扣，2 個月免費 ≈ 17%
+                  </div>
+                </div>
+              </>
             )}
           </div>
           {activeTab === "credit" && (
@@ -613,6 +815,36 @@ export default function AIPricingCalc() {
                   {" · "}月 API 成本 <span style={{ color: "#ef4444", fontWeight: 700 }}>{fmtFull(Math.round(data.monthApiCostPerUser))}</span>
                   {" · "}月毛利 <span style={{ color: data.creditMarginPerUser >= 0 ? "#34d399" : "#ef4444", fontWeight: 700 }}>{fmtFull(Math.round(data.creditMarginPerUser))} ({data.creditMarginPct.toFixed(0)}%)</span>
                 </div>
+              </div>
+            </div>
+          )}
+          {activeTab === "sub" && (
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #e2e8f0" }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 14 }}>
+                <NumInput label="年繳用戶月流失（鎖一年）" value={annualChurn} onChange={setAnnualChurn} suffix="%" width={45} small
+                  tip="鎖約期內流失通常 1-3%" on={enabled.annual} />
+                <NumInput label="新用戶體驗輪數" value={trialTurns} onChange={setTrialTurns} suffix="輪" width={50} small
+                  tip="送幾輪試用，用完才算付費" on={enabled.trial} onToggle={() => toggle("trial")} />
+                <div style={{ opacity: enabled.trial ? 1 : 0.45 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, display: "flex", alignItems: "center", gap: 5 }}>
+                    <Dot on={enabled.trial} onClick={() => toggle("trial")} />
+                    <span onClick={() => toggle("trial")} style={{ textDecoration: enabled.trial ? "none" : "line-through", cursor: "pointer" }}>試用轉付費率</span>
+                  </div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: "#34d399" }}>{trialConversion}%</div>
+                  <input type="range" min={1} max={100} step={1} value={trialConversion} disabled={!enabled.trial}
+                    onChange={e => setTrialConversion(Number(e.target.value))}
+                    style={{ width: "100%", accentColor: "#34d399", marginTop: 4 }} />
+                  <div style={{ display: "flex", gap: 3, marginTop: 6, flexWrap: "wrap" }}>
+                    {[15, 25, 35, 50, 70].map(v => (
+                      <Chip key={v} label={`${v}%`} active={trialConversion === v} onClick={() => setTrialConversion(v)} color="#34d399" />
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: "#64748b", marginTop: 10, lineHeight: 1.7 }}>
+                ARPU(認列) <span style={{ color: "#a78bfa", fontWeight: 700 }}>{fmtFull(Math.round(data.subArpu))}</span>
+                {" · "}月毛利 <span style={{ color: data.subMarginPerUser >= 0 ? "#34d399" : "#ef4444", fontWeight: 700 }}>{fmtFull(Math.round(data.subMarginPerUser))} ({data.subMarginPct.toFixed(0)}%)</span>
+                {" · "}混合月流失 <span style={{ color: "#ef4444", fontWeight: 700 }}>{(data.blendedChurn * 100).toFixed(1)}%</span>
               </div>
             </div>
           )}
@@ -724,10 +956,14 @@ export default function AIPricingCalc() {
         {/* ===== KEY METRICS ===== */}
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
           {[
-            activeTab === "credit"
+            activeTab === "sub"
+              ? { label: "每用戶月毛利", value: `${fmtFull(Math.round(data.subMarginPerUser))} (${data.subMarginPct.toFixed(0)}%)`, color: data.subMarginPerUser >= 0 ? "#34d399" : "#ef4444" }
+              : activeTab === "credit"
               ? { label: "每用戶月毛利", value: `${fmtFull(Math.round(data.creditMarginPerUser))} (${data.creditMarginPct.toFixed(0)}%)`, color: data.creditMarginPerUser >= 0 ? "#34d399" : "#ef4444" }
               : { label: "每次購買毛利", value: `${fmtFull(Math.round(data.grossMarginPerPurchase))} (${data.grossMarginPct.toFixed(0)}%)`, color: data.grossMarginPerPurchase >= 0 ? "#34d399" : "#ef4444" },
-            activeTab === "credit"
+            activeTab === "sub"
+              ? { label: "靜態損平衡(含1GPU)", value: data.breakEvenUsers === Infinity ? "∞" : `${data.breakEvenUsers.toLocaleString()} 活躍訂閱`, color: "#f59e0b" }
+              : activeTab === "credit"
               ? { label: "靜態損平衡(含1GPU)", value: data.breakEvenUsers === Infinity ? "∞" : `${data.breakEvenUsers.toLocaleString()} 活躍用戶`, color: "#f59e0b" }
               : { label: "靜態損平衡(含1GPU)", value: data.breakEvenUsers === Infinity ? "∞" : `${data.breakEvenUsers.toLocaleString()} 次購買/月`, color: "#f59e0b" },
             { label: "第 12 月活躍用戶", value: `${(data.months[11]?.activeUsers || 0).toLocaleString()} 人`, color: "#3b82f6" },
@@ -797,7 +1033,7 @@ export default function AIPricingCalc() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, minWidth: 850 }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid #cbd5e1" }}>
-                  {["月份", "季/成長", "活躍用戶", "新增", activeTab === "credit" ? "等效點包數" : "購買次數", "GPU台數", "營收", "API成本", "固定+GPU", "月損益", "累計損益"].map(h => (
+                  {["月份", "季/成長", "活躍用戶", "新增", activeTab === "credit" ? "等效點包數" : activeTab === "sub" ? "活躍訂閱" : "購買次數", "GPU台數", "營收", "API成本", "固定+GPU", "月損益", "累計損益"].map(h => (
                     <th key={h} style={{ padding: "7px 5px", textAlign: "right", color: "#94a3b8", fontWeight: 500, fontSize: 9 }}>{h}</th>
                   ))}
                 </tr>
@@ -832,6 +1068,8 @@ export default function AIPricingCalc() {
             ⚡ = 目標回本期 ｜
             {activeTab === "credit"
               ? " 等效點包數 = 活躍用戶 × 月消耗點數 ÷ 加權平均點包點數"
+              : activeTab === "sub"
+              ? " 活躍訂閱 = 月初留存 × (1 − 混合流失) + 新付費用戶；新 signups = 新付費 ÷ 試用轉換率"
               : " 購買次數 = 新用戶首購 + 舊用戶續購"}
             ｜ 固定+GPU = 基礎成本 + 伺服器擴容費
           </div>
@@ -845,7 +1083,9 @@ export default function AIPricingCalc() {
         }}>
           💡 <strong style={{ color: "#f59e0b" }}>模型說明：</strong>
           活躍用戶 = 上月活躍 × (1 − 流失率) × (1 + 成長率)（先流失後成長，負成長率自動歸零）。
-          {activeTab === "credit"
+          {activeTab === "sub"
+            ? " 訂閱模式：ARPU(認列) = 加權月費 × (月繳% + 年繳% × (1 − 折扣)) + 超額加購貢獻；混合月流失 = 月繳churn × 月繳% + 年繳churn × 年繳%；新付費用戶要倒推 signups（÷ 試用轉換率），signups × 體驗輪數 × 單輪成本記入當月 API 成本。"
+            : activeTab === "credit"
             ? " 月營收 = 活躍用戶 × 月消耗點數 × 加權平均單點售價；API 成本依實際使用率計算（未用完的點數直接變成毛利）。"
             : " 購買次數 = 當月新增首購 + 各 cohort 依續購週期均勻觸發的回購（套用續購率，支援週期 < 1 月）。"}
           GPU 成本隨用戶數階梯增長，每滿 {usersPerServer} 人加開一台 {fmt(sCost)}/月。
