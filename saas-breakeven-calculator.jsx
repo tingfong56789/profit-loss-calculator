@@ -7,6 +7,28 @@ function fmt(n) {
 }
 function fmtFull(n) { return "NT$" + Math.round(n).toLocaleString("en-US"); }
 
+const STORAGE_PREFIX = "saas-calc-v1:";
+
+function usePersistentState(key, initial) {
+  const fullKey = STORAGE_PREFIX + key;
+  const [value, setValue] = useState(() => {
+    if (typeof window === "undefined") return initial;
+    try {
+      const raw = window.localStorage.getItem(fullKey);
+      return raw === null ? initial : JSON.parse(raw);
+    } catch {
+      return initial;
+    }
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(fullKey, JSON.stringify(value));
+    } catch {}
+  }, [fullKey, value]);
+  return [value, setValue];
+}
+
 function Dot({ on, onClick }) {
   if (onClick === undefined) return null;
   return (
@@ -65,73 +87,74 @@ const card = {
 
 export default function AIPricingCalc() {
   // API costs
-  const [costWhisper, setCostWhisper] = useState("0.3");
-  const [costLLM, setCostLLM] = useState("1.5");
-  const [costTTS, setCostTTS] = useState("0.4");
-  const [costDenoise, setCostDenoise] = useState("0.1");
+  const [costWhisper, setCostWhisper] = usePersistentState("costWhisper", "0.3");
+  const [costLLM, setCostLLM] = usePersistentState("costLLM", "1.5");
+  const [costTTS, setCostTTS] = usePersistentState("costTTS", "0.4");
+  const [costDenoise, setCostDenoise] = usePersistentState("costDenoise", "0.1");
 
   // Packs
-  const [packs, setPacks] = useState([
+  const [packs, setPacks] = usePersistentState("packs", [
     { name: "輕量包", turns: 200, price: 199 },
     { name: "標準包", turns: 600, price: 499 },
     { name: "專業包", turns: 1500, price: 999 },
   ]);
-  const [packMix, setPackMix] = useState([30, 50, 20]);
-  const [avgTurnsUsed, setAvgTurnsUsed] = useState("70");
+  const [packMix, setPackMix] = usePersistentState("packMix", [30, 50, 20]);
+  const [avgTurnsUsed, setAvgTurnsUsed] = usePersistentState("avgTurnsUsed", "70");
 
   // Business
-  const [baseCost, setBaseCost] = useState("400000");
-  const [initUsers, setInitUsers] = useState("50");
-  const [qGrowth, setQGrowth] = useState([85, 40, 20, 10]);
+  const [baseCost, setBaseCost] = usePersistentState("baseCost", "400000");
+  const [initUsers, setInitUsers] = usePersistentState("initUsers", "50");
+  const [qGrowth, setQGrowth] = usePersistentState("qGrowth", [85, 40, 20, 10]);
 
-  // NEW: Churn
-  const [churnRate, setChurnRate] = useState(8);
+  // Churn
+  const [churnRate, setChurnRate] = usePersistentState("churnRate", 8);
 
-  // NEW: Server scaling
-  const [usersPerServer, setUsersPerServer] = useState("100");
-  const [serverCost, setServerCost] = useState("50000");
+  // Server scaling
+  const [usersPerServer, setUsersPerServer] = usePersistentState("usersPerServer", "100");
+  const [serverCost, setServerCost] = usePersistentState("serverCost", "50000");
 
-  // NEW: Repurchase
-  const [repurchaseRate, setRepurchaseRate] = useState(60);
-  const [repurchaseCycle, setRepurchaseCycle] = useState("1.5"); // months between purchases
+  // Repurchase
+  const [repurchaseRate, setRepurchaseRate] = usePersistentState("repurchaseRate", 60);
+  const [repurchaseCycle, setRepurchaseCycle] = usePersistentState("repurchaseCycle", "1.5");
 
-  // NEW: single monthly growth rate (overrides quarterly when enabled)
-  const [monthlyGrowth, setMonthlyGrowth] = useState(15);
+  // Monthly growth override
+  const [monthlyGrowth, setMonthlyGrowth] = usePersistentState("monthlyGrowth", 15);
 
-  // NEW: pricing model tab
-  const [activeTab, setActiveTab] = useState("pack");
+  // Pricing model tab
+  const [activeTab, setActiveTab] = usePersistentState("activeTab", "pack");
 
   // Credit-mode state
-  const [creditPacks, setCreditPacks] = useState([
+  const [creditPacks, setCreditPacks] = usePersistentState("creditPacks", [
     { name: "入門包", credits: 1000, price: 499 },
     { name: "標準包", credits: 3000, price: 1299 },
     { name: "專業包", credits: 7000, price: 2799 },
   ]);
-  const [creditPackMix, setCreditPackMix] = useState([30, 50, 20]);
-  const [creditsPerTurn, setCreditsPerTurn] = useState("10");
-  const [creditsPerMonthPerUser, setCreditsPerMonthPerUser] = useState("500");
-  const [consumptionRate, setConsumptionRate] = useState("100");
+  const [creditPackMix, setCreditPackMix] = usePersistentState("creditPackMix", [30, 50, 20]);
+  const [creditsPerTurn, setCreditsPerTurn] = usePersistentState("creditsPerTurn", "10");
+  const [creditsPerMonthPerUser, setCreditsPerMonthPerUser] = usePersistentState("creditsPerMonthPerUser", "500");
+  const [consumptionRate, setConsumptionRate] = usePersistentState("consumptionRate", "100");
 
   // Subscription-mode state
-  const [subPlans, setSubPlans] = useState([
+  const [subPlans, setSubPlans] = usePersistentState("subPlans", [
     { name: "基礎版", monthlyPrice: 299, includedTurns: 300 },
     { name: "標準版", monthlyPrice: 799, includedTurns: 1000 },
     { name: "專業版", monthlyPrice: 1999, includedTurns: 3000 },
   ]);
-  const [subPlanMix, setSubPlanMix] = useState([50, 35, 15]);
-  const [subUsageRate, setSubUsageRate] = useState("70");
-  const [overageTurns, setOverageTurns] = useState("100");
-  const [overagePrice, setOveragePrice] = useState("99");
-  const [overageUserPct, setOverageUserPct] = useState("20");
-  const [overagePacksPerUser, setOveragePacksPerUser] = useState("1.5");
-  const [annualAdoption, setAnnualAdoption] = useState(30);
-  const [annualDiscount, setAnnualDiscount] = useState(20);
-  const [annualChurn, setAnnualChurn] = useState("2");
-  const [trialTurns, setTrialTurns] = useState("10");
-  const [trialConversion, setTrialConversion] = useState(35);
+  const [subPlanMix, setSubPlanMix] = usePersistentState("subPlanMix", [50, 35, 15]);
+  const [subUsageRate, setSubUsageRate] = usePersistentState("subUsageRate", "70");
+  const [overageTurns, setOverageTurns] = usePersistentState("overageTurns", "100");
+  const [overagePrice, setOveragePrice] = usePersistentState("overagePrice", "99");
+  const [overageUserPct, setOverageUserPct] = usePersistentState("overageUserPct", "20");
+  const [overagePacksPerUser, setOveragePacksPerUser] = usePersistentState("overagePacksPerUser", "1.5");
+  const [annualAdoption, setAnnualAdoption] = usePersistentState("annualAdoption", 30);
+  const [annualDiscount, setAnnualDiscount] = usePersistentState("annualDiscount", 20);
+  const [annualChurn, setAnnualChurn] = usePersistentState("annualChurn", "2");
+  const [trialTurns, setTrialTurns] = usePersistentState("trialTurns", "10");
+  const [trialConversion, setTrialConversion] = usePersistentState("trialConversion", 35);
 
   // Per-variable enable/disable (disabled → neutral value substituted in calc)
-  const [enabled, setEnabled] = useState({
+  // Spread initial defaults over loaded value so newly-added keys exist after a schema bump.
+  const ENABLED_DEFAULTS = {
     costDenoise: true, costWhisper: true, costLLM: true, costTTS: true,
     avgTurnsUsed: true, baseCost: true, initUsers: true,
     churnRate: true, gpu: true, repurchase: true,
@@ -142,7 +165,20 @@ export default function AIPricingCalc() {
     creditsPerTurn: true, creditsPerMonthPerUser: true, consumptionRate: true,
     sub0: true, sub1: true, sub2: true,
     subUsageRate: true, overage: true, annual: true, trial: true,
-  });
+  };
+  const [enabledRaw, setEnabled] = usePersistentState("enabled", ENABLED_DEFAULTS);
+  const enabled = { ...ENABLED_DEFAULTS, ...enabledRaw };
+
+  const handleReset = () => {
+    if (typeof window === "undefined") return;
+    if (!window.confirm("確定要把所有參數重設為預設值？此動作會清掉你目前儲存的所有設定。")) return;
+    try {
+      Object.keys(window.localStorage)
+        .filter(k => k.startsWith(STORAGE_PREFIX))
+        .forEach(k => window.localStorage.removeItem(k));
+    } catch {}
+    window.location.reload();
+  };
 
   const [isMobile, setIsMobile] = useState(
     typeof window !== "undefined" && window.innerWidth < 640
@@ -391,18 +427,34 @@ export default function AIPricingCalc() {
     }}>
       <div style={{ maxWidth: 820, margin: "0 auto" }}>
         {/* Header */}
-        <div style={{ marginBottom: 28 }}>
-          <div style={{
-            display: "inline-block", fontSize: 10, letterSpacing: 2.5, textTransform: "uppercase",
-            color: "#f59e0b", background: "rgba(245,158,11,0.1)",
-            padding: "4px 12px", borderRadius: 6, marginBottom: 10,
-          }}>AI 軍師 · 對話包定價模擬器 v2</div>
-          <h1 style={{ fontSize: isMobile ? 19 : 24, fontWeight: 700, margin: "8px 0 0", color: "#1a202c", lineHeight: 1.3 }}>
-            完整損益模擬（含流失 · 擴容 · 續購）
-          </h1>
-          <p style={{ color: "#94a3b8", fontSize: 12, margin: "6px 0 0" }}>
-            6 大維度：API成本 → 對話包設計 → 營運成本 → 用戶流失 → 伺服器擴容 → 續購行為
-          </p>
+        <div style={{ marginBottom: 28, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{
+              display: "inline-block", fontSize: 10, letterSpacing: 2.5, textTransform: "uppercase",
+              color: "#f59e0b", background: "rgba(245,158,11,0.1)",
+              padding: "4px 12px", borderRadius: 6, marginBottom: 10,
+            }}>AI 軍師 · 對話包定價模擬器 v2</div>
+            <h1 style={{ fontSize: isMobile ? 19 : 24, fontWeight: 700, margin: "8px 0 0", color: "#1a202c", lineHeight: 1.3 }}>
+              完整損益模擬（含流失 · 擴容 · 續購）
+            </h1>
+            <p style={{ color: "#94a3b8", fontSize: 12, margin: "6px 0 0" }}>
+              6 大維度：API成本 → 對話包設計 → 營運成本 → 用戶流失 → 伺服器擴容 → 續購行為
+            </p>
+            <p style={{ color: "#94a3b8", fontSize: 10, margin: "4px 0 0" }}>
+              💾 你的調整會自動儲存在這台裝置的瀏覽器
+            </p>
+          </div>
+          <button onClick={handleReset} style={{
+            background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 8,
+            padding: "8px 14px", fontSize: 12, fontWeight: 600, color: "#64748b",
+            cursor: "pointer", whiteSpace: "nowrap",
+            boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
+          }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = "#ef4444"; e.currentTarget.style.color = "#ef4444"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.color = "#64748b"; }}
+          >
+            ↻ 重設預設值
+          </button>
         </div>
 
         {/* ===== Tab Switcher ===== */}
