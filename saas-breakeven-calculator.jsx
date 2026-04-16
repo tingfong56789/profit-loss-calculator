@@ -16,6 +16,16 @@ function parseFloatSafe(val) {
 
 const STORAGE_PREFIX = "saas-calc-v3:";
 
+const DEFAULT_LLM_MODELS = [
+  { enabled: true,  name: "gemini-2.5-flash",              inputPriceUSD: "0.15",  outputPriceUSD: "0.60"  },
+  { enabled: true,  name: "gemini-2.5-pro",                inputPriceUSD: "1.25",  outputPriceUSD: "10.00" },
+  { enabled: true,  name: "gemini-3.1-flash-lite-preview", inputPriceUSD: "0.15",  outputPriceUSD: "0.60"  },
+  { enabled: false, name: "gpt-4o",                        inputPriceUSD: "2.50",  outputPriceUSD: "10.00" },
+  { enabled: false, name: "gpt-4o-mini",                   inputPriceUSD: "0.15",  outputPriceUSD: "0.60"  },
+  { enabled: false, name: "claude-sonnet-4",               inputPriceUSD: "3.00",  outputPriceUSD: "15.00" },
+  { enabled: false, name: "claude-opus-4",                 inputPriceUSD: "15.00", outputPriceUSD: "75.00" },
+];
+
 function usePersistentState(key, initial) {
   const fullKey = STORAGE_PREFIX + key;
   const [value, setValue] = useState(() => {
@@ -93,11 +103,20 @@ const card = {
 };
 
 export default function AIPricingCalc() {
-  // API costs
+  // API costs (denoise/whisper/tts are flat NT$/turn; LLM is computed from model table)
   const [costWhisper, setCostWhisper] = usePersistentState("costWhisper", "0.3");
-  const [costLLM, setCostLLM] = usePersistentState("costLLM", "1.5");
   const [costTTS, setCostTTS] = usePersistentState("costTTS", "0.4");
   const [costDenoise, setCostDenoise] = usePersistentState("costDenoise", "0.1");
+
+  // LLM pricing: global exchange rate, baseline token unit, per-model weight table,
+  // and an observed real-cost-per-dialog (from billing) used to drive simulator P&L.
+  const [usdToNtd, setUsdToNtd] = usePersistentState("usdToNtd", "32");
+  const [baseUnitTokens, setBaseUnitTokens] = usePersistentState("baseUnitTokens", "1000");
+  const [llmModels, setLlmModels] = usePersistentState("llmModels", DEFAULT_LLM_MODELS);
+  const [actualCostUsdPerTurn, setActualCostUsdPerTurn] = usePersistentState("actualCostUsdPerTurn", "0.16");
+
+  // Manual override for credits-per-turn in credit mode (auto-computed by default)
+  const [creditsPerTurnOverride, setCreditsPerTurnOverride] = usePersistentState("creditsPerTurnOverride", false);
 
   // Packs (v3 defaults — positive out-of-box margin)
   const [packs, setPacks] = usePersistentState("packs", [
@@ -254,11 +273,58 @@ export default function AIPricingCalc() {
 
   const toggle = (key) => setEnabled(s => ({ ...s, [key]: !s[key] }));
 
+  // LLM pipeline — two cleanly separated concerns:
+  //   1. Weight table: pure pricing ratios vs. the cheapest enabled model.
+  //   2. Observed USD cost per dialog: drives simulator NT$ cost and point totals.
+  const exchangeRate = Math.max(0, parseFloatSafe(usdToNtd) || 0);
+  const baseUnit = Math.max(1, parseFloatSafe(baseUnitTokens) || 1000);
+
+  const enabledModels = llmModels.filter(m => m.enabled);
+  const positiveIn = enabledModels.map(m => parseFloatSafe(m.inputPriceUSD) || 0).filter(p => p > 0);
+  const positiveOut = enabledModels.map(m => parseFloatSafe(m.outputPriceUSD) || 0).filter(p => p > 0);
+  const minInPrice = positiveIn.length > 0 ? Math.min(...positiveIn) : 0;
+  const minOutPrice = positiveOut.length > 0 ? Math.min(...positiveOut) : 0;
+
+  // Baseline model for display: model that sits at minInPrice (tie-broken by minOutPrice).
+  const baselineName = (() => {
+    if (enabledModels.length === 0 || minInPrice <= 0) return "";
+    const inMatches = enabledModels.filter(m => (parseFloatSafe(m.inputPriceUSD) || 0) === minInPrice);
+    const bothMatch = inMatches.find(m => (parseFloatSafe(m.outputPriceUSD) || 0) === minOutPrice);
+    if (bothMatch) return bothMatch.name;
+    const sorted = [...inMatches].sort((a, b) =>
+      (parseFloatSafe(a.outputPriceUSD) || 0) - (parseFloatSafe(b.outputPriceUSD) || 0));
+    return sorted[0]?.name || "";
+  })();
+
+  const modelRows = llmModels.map(m => {
+    const inPrice = parseFloatSafe(m.inputPriceUSD) || 0;
+    const outPrice = parseFloatSafe(m.outputPriceUSD) || 0;
+    const pointWeightIn = (m.enabled && minInPrice > 0 && inPrice > 0)
+      ? Math.max(1, Math.round(inPrice / minInPrice)) : 0;
+    const pointWeightOut = (m.enabled && minOutPrice > 0 && outPrice > 0)
+      ? Math.max(1, Math.round(outPrice / minOutPrice)) : 0;
+    const isBaseline = m.name === baselineName && m.enabled;
+    return { ...m, inPrice, outPrice, pointWeightIn, pointWeightOut, isBaseline };
+  });
+  const llmEnabledCount = modelRows.filter(r => r.enabled).length;
+
+  // Observed real-cost-per-dialog drives LLM NT$ spend and the point estimate.
+  // 1 baseline point ≡ baseUnit input tokens @ minInPrice — so 1 point costs
+  // (minInPrice × baseUnit / 1e6 × exchangeRate) NT$.
+  const observedUsdPerTurn = Math.max(0, parseFloatSafe(actualCostUsdPerTurn) || 0);
+  const observedNtdPerTurn = observedUsdPerTurn * exchangeRate;
+  const baselineNtdPerPoint = minInPrice > 0
+    ? (minInPrice * baseUnit / 1e6) * exchangeRate : 0;
+  const observedPointsPerTurn = baselineNtdPerPoint > 0
+    ? Math.max(1, Math.round(observedNtdPerTurn / baselineNtdPerPoint)) : 0;
+
   const apiCostPerTurn =
     (enabled.costWhisper ? (parseFloatSafe(costWhisper) || 0) : 0) +
-    (enabled.costLLM ? (parseFloatSafe(costLLM) || 0) : 0) +
+    (enabled.costLLM ? observedNtdPerTurn : 0) +
     (enabled.costTTS ? (parseFloatSafe(costTTS) || 0) : 0) +
     (enabled.costDenoise ? (parseFloatSafe(costDenoise) || 0) : 0);
+
+  const autoCreditsPerTurn = enabled.costLLM ? observedPointsPerTurn : 0;
 
   const hrVal = parseIntSafe(hrCost) || 0;
   const officeVal = parseIntSafe(officeCost) || 0;
@@ -295,8 +361,10 @@ export default function AIPricingCalc() {
       avgApiCostPerPurchase += pack.turns * turnsUsedPct * apiCostPerTurn * pct;
     });
 
-    // Credit-mode pricing
-    const cpt = enabled.creditsPerTurn ? (parseFloatSafe(creditsPerTurn) || 1) : 1;
+    // Credit-mode pricing — creditsPerTurn auto-computed from pipeline points unless overridden
+    const manualCpt = parseFloatSafe(creditsPerTurn) || 1;
+    const effCpt = creditsPerTurnOverride ? manualCpt : Math.max(1, autoCreditsPerTurn || 1);
+    const cpt = enabled.creditsPerTurn ? effCpt : 1;
     const cpu = enabled.creditsPerMonthPerUser ? (parseFloatSafe(creditsPerMonthPerUser) || 0) : 0;
     const consRate = (parseFloatSafe(consumptionRate) || 70) / 100;
     const effCreditMix = creditPackMix.map((m, i) => enabled[`creditPack${i}`] ? (m || 0) : 0);
@@ -738,18 +806,184 @@ export default function AIPricingCalc() {
             <span style={{ fontSize: 15 }}>⚡</span>
             <span style={{ fontSize: 13, fontWeight: 600, color: "#1a202c" }}>① 每輪對話 API 成本</span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10, marginBottom: 12 }}>
+
+          {/* Global exchange rate + baseline token unit */}
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr", gap: 10, marginBottom: 12, padding: 10, background: "#f8fafc", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+            <NumInput label="美金匯率 (USD → NT$)" value={usdToNtd} onChange={setUsdToNtd} prefix="1 USD =" suffix="NT$" width={55} small />
+            <NumInput label="基準換算單位 (tokens/點)" value={baseUnitTokens} onChange={setBaseUnitTokens} suffix="tok" width={70} small
+              tip="1 點 = 基準模型的這麼多 tokens" />
+          </div>
+
+          {/* Non-LLM pipeline costs */}
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(3, 1fr)" : "repeat(3, 1fr)", gap: 10, marginBottom: 12 }}>
             <NumInput label="AI 降噪" value={costDenoise} onChange={setCostDenoise} prefix="NT$" suffix="/輪" width={55} small on={enabled.costDenoise} onToggle={() => toggle("costDenoise")} />
             <NumInput label="Whisper STT" value={costWhisper} onChange={setCostWhisper} prefix="NT$" suffix="/輪" width={55} small on={enabled.costWhisper} onToggle={() => toggle("costWhisper")} />
-            <NumInput label="LLM 推理" value={costLLM} onChange={setCostLLM} prefix="NT$" suffix="/輪" width={55} small on={enabled.costLLM} onToggle={() => toggle("costLLM")} />
             <NumInput label="TTS 語音合成" value={costTTS} onChange={setCostTTS} prefix="NT$" suffix="/輪" width={55} small on={enabled.costTTS} onToggle={() => toggle("costTTS")} />
           </div>
+
+          {/* ===== LLM Model Table (weights only — pure pricing ratios) ===== */}
+          <div style={{ marginBottom: 12, padding: 10, background: "#f8fafc", borderRadius: 10, border: "1px solid #e2e8f0", opacity: enabled.costLLM ? 1 : 0.45 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+              <Dot on={enabled.costLLM} onClick={() => toggle("costLLM")} />
+              <span onClick={() => toggle("costLLM")} style={{ fontSize: 12, fontWeight: 700, color: "#1a202c", cursor: "pointer", textDecoration: enabled.costLLM ? "none" : "line-through" }}>
+                🧠 LLM 模型點數權重表
+              </span>
+              <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: "auto" }}>
+                已啟用 <b style={{ color: "#3b82f6" }}>{llmEnabledCount}</b> · 基準 <b style={{ color: "#f59e0b" }}>{baselineName || "—"}</b> 👑
+              </span>
+            </div>
+
+            <div style={{ overflowX: "auto", marginLeft: -4, marginRight: -4 }}>
+              <table style={{ width: "100%", minWidth: 520, borderCollapse: "separate", borderSpacing: "0 4px", fontSize: 11 }}>
+                <thead>
+                  <tr style={{ color: "#94a3b8", fontSize: 10, textAlign: "right" }}>
+                    <th style={{ textAlign: "center", width: 28, fontWeight: 500 }}>✓</th>
+                    <th style={{ textAlign: "left", fontWeight: 500, paddingLeft: 6 }}>模型名稱</th>
+                    <th style={{ fontWeight: 500 }}>In $/1M</th>
+                    <th style={{ fontWeight: 500 }}>Out $/1M</th>
+                    <th style={{ fontWeight: 500, textAlign: "center", color: "#3b82f6" }}>In 權重</th>
+                    <th style={{ fontWeight: 500, textAlign: "center", color: "#f59e0b" }}>Out 權重</th>
+                    <th style={{ width: 22 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {modelRows.map((r, i) => {
+                    const updateModel = (field, value) => {
+                      const next = [...llmModels];
+                      next[i] = { ...next[i], [field]: field === "enabled" ? !!value : value };
+                      setLlmModels(next);
+                    };
+                    const removeModel = () => {
+                      const next = llmModels.filter((_, j) => j !== i);
+                      setLlmModels(next);
+                    };
+                    const cellInput = (val, onChange, width = 60, align = "right") => (
+                      <input value={val} onChange={e => onChange(e.target.value)}
+                        style={{
+                          background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: 6,
+                          padding: "4px 6px", fontSize: 11, fontWeight: 600, color: "#1a202c",
+                          width, textAlign: align, outline: "none",
+                        }} />
+                    );
+                    const cellTd = { padding: "2px 2px", border: "1px solid #e2e8f0", borderLeft: "none", borderRight: "none" };
+                    return (
+                      <tr key={i} style={{ background: r.isBaseline ? "rgba(251,191,36,0.08)" : "#ffffff", opacity: r.enabled ? 1 : 0.5 }}>
+                        <td style={{ textAlign: "center", padding: "2px 4px", borderRadius: "8px 0 0 8px", border: "1px solid #e2e8f0", borderRight: "none", background: r.isBaseline ? "rgba(251,191,36,0.08)" : "transparent" }}>
+                          <input type="checkbox" checked={r.enabled} onChange={e => updateModel("enabled", e.target.checked)}
+                            style={{ cursor: "pointer", accentColor: "#3b82f6" }} />
+                        </td>
+                        <td style={{ padding: "2px 4px", border: "1px solid #e2e8f0", borderLeft: "none", borderRight: "none" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            {r.isBaseline && <span title="基準模型" style={{ fontSize: 12 }}>👑</span>}
+                            <input value={r.name} onChange={e => updateModel("name", e.target.value)}
+                              style={{
+                                background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: 6,
+                                padding: "4px 6px", fontSize: 11, fontWeight: 600, color: "#1a202c",
+                                flex: 1, minWidth: 130, outline: "none",
+                              }} />
+                          </div>
+                        </td>
+                        <td style={{ textAlign: "right", ...cellTd }}>
+                          {cellInput(r.inputPriceUSD, v => updateModel("inputPriceUSD", v), 55)}
+                        </td>
+                        <td style={{ textAlign: "right", ...cellTd }}>
+                          {cellInput(r.outputPriceUSD, v => updateModel("outputPriceUSD", v), 55)}
+                        </td>
+                        <td style={{ textAlign: "center", ...cellTd }}>
+                          <span style={{
+                            display: "inline-block", minWidth: 24, padding: "2px 7px",
+                            borderRadius: 999,
+                            background: r.enabled && r.pointWeightIn > 0 ? "#3b82f6" : "#e2e8f0",
+                            color: r.enabled && r.pointWeightIn > 0 ? "#ffffff" : "#94a3b8",
+                            fontSize: 11, fontWeight: 700,
+                          }}>{r.pointWeightIn || "—"}</span>
+                        </td>
+                        <td style={{ textAlign: "center", ...cellTd }}>
+                          <span style={{
+                            display: "inline-block", minWidth: 24, padding: "2px 7px",
+                            borderRadius: 999,
+                            background: r.enabled && r.pointWeightOut > 0 ? "#f59e0b" : "#e2e8f0",
+                            color: r.enabled && r.pointWeightOut > 0 ? "#ffffff" : "#94a3b8",
+                            fontSize: 11, fontWeight: 700,
+                          }}>{r.pointWeightOut || "—"}</span>
+                        </td>
+                        <td style={{ textAlign: "center", padding: "2px 4px", borderRadius: "0 8px 8px 0", border: "1px solid #e2e8f0", borderLeft: "none" }}>
+                          <button onClick={removeModel} title="刪除此模型"
+                            style={{ background: "transparent", border: "none", color: "#cbd5e1", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}
+                            onMouseEnter={e => e.currentTarget.style.color = "#ef4444"}
+                            onMouseLeave={e => e.currentTarget.style.color = "#cbd5e1"}>×</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <button onClick={() => setLlmModels([...llmModels, {
+                enabled: true, name: "custom-model", inputPriceUSD: "1.00", outputPriceUSD: "3.00",
+              }])}
+                style={{
+                  background: "#ffffff", border: "1px dashed #94a3b8", borderRadius: 8,
+                  padding: "6px 12px", fontSize: 11, fontWeight: 600, color: "#64748b", cursor: "pointer",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = "#3b82f6"; e.currentTarget.style.color = "#3b82f6"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = "#94a3b8"; e.currentTarget.style.color = "#64748b"; }}
+              >+ 新增模型</button>
+              <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: "auto" }}>
+                點數權重 = 該模型 $/1M ÷ 基準 $/1M（四捨五入、最小 1）
+              </span>
+            </div>
+          </div>
+
+          {/* ===== Observed real cost per dialog (drives simulator P&L) ===== */}
+          <div style={{ marginBottom: 12, padding: 10, background: "rgba(52,211,153,0.06)", borderRadius: 10, border: "1px solid rgba(52,211,153,0.3)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ flex: "0 0 auto" }}>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>每輪對話實際總成本</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ fontSize: 12, color: "#64748b" }}>US$</span>
+                  <input value={actualCostUsdPerTurn} onChange={e => setActualCostUsdPerTurn(e.target.value)}
+                    style={{
+                      background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: 8,
+                      padding: "6px 10px", fontSize: 20, fontWeight: 700, color: "#1a202c",
+                      width: 90, outline: "none",
+                    }}
+                    onFocus={e => e.target.style.borderColor = "#34d399"}
+                    onBlur={e => e.target.style.borderColor = "#cbd5e1"} />
+                </div>
+                <div style={{ fontSize: 9, color: "#94a3b8", marginTop: 3 }}>
+                  從 LLM 帳單觀察一次完整對話的花費
+                </div>
+              </div>
+              <div style={{ flex: 1, minWidth: 180, paddingLeft: 10, borderLeft: "1px solid rgba(52,211,153,0.3)" }}>
+                <div style={{ fontSize: 10, color: "#94a3b8", marginBottom: 3 }}>模擬器換算</div>
+                <div style={{ fontSize: 11, lineHeight: 1.8 }}>
+                  US${observedUsdPerTurn.toFixed(4)} × <b>{exchangeRate}</b> = <b style={{ color: "#ef4444" }}>NT${observedNtdPerTurn.toFixed(3)}</b>/輪
+                </div>
+                <div style={{ fontSize: 11, lineHeight: 1.6 }}>
+                  NT${observedNtdPerTurn.toFixed(3)} ÷ <b>NT${baselineNtdPerPoint.toFixed(4)}</b>/點 ≈ <b style={{ color: "#34d399", fontSize: 13 }}>{observedPointsPerTurn}</b> 點/輪
+                </div>
+                <div style={{ fontSize: 9, color: "#cbd5e1", marginTop: 3 }}>
+                  1 點 = 基準模型 {baseUnit} input tokens（{baselineName ? `@ $${minInPrice}/1M` : "尚未設定基準"}）
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div style={{
-            display: "flex", alignItems: "center", gap: 10,
+            display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
             background: "rgba(245,158,11,0.06)", borderRadius: 10, padding: "8px 14px",
           }}>
             <span style={{ fontSize: 11, color: "#64748b" }}>單輪總成本</span>
-            <span style={{ fontSize: 20, fontWeight: 700, color: "#f59e0b" }}>NT${apiCostPerTurn.toFixed(1)}</span>
+            <span style={{ fontSize: 20, fontWeight: 700, color: "#f59e0b" }}>NT${apiCostPerTurn.toFixed(2)}</span>
+            <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: "auto" }}>
+              LLM NT${(enabled.costLLM ? observedNtdPerTurn : 0).toFixed(2)}
+              {enabled.costDenoise && ` + 降噪 NT$${(parseFloatSafe(costDenoise) || 0).toFixed(2)}`}
+              {enabled.costWhisper && ` + STT NT$${(parseFloatSafe(costWhisper) || 0).toFixed(2)}`}
+              {enabled.costTTS && ` + TTS NT$${(parseFloatSafe(costTTS) || 0).toFixed(2)}`}
+            </span>
           </div>
         </div>
 
@@ -1209,14 +1443,49 @@ export default function AIPricingCalc() {
               </>
             ) : activeTab === "credit" ? (
               <>
-                <div>
-                  <NumInput label="每輪對話消耗點數" value={creditsPerTurn} onChange={setCreditsPerTurn} suffix="點/輪" width={50} small
-                    tip="1 次對話扣幾點" on={enabled.creditsPerTurn} onToggle={() => toggle("creditsPerTurn")} />
-                  <div style={{ display: "flex", gap: 3, marginTop: 6, flexWrap: "wrap" }}>
-                    {[{ l: "5", v: "5" }, { l: "10", v: "10" }, { l: "15", v: "15" }, { l: "20", v: "20" }].map(c => (
-                      <Chip key={c.v} label={c.l + "點"} active={creditsPerTurn === c.v} onClick={() => setCreditsPerTurn(c.v)} color="#34d399" />
-                    ))}
+                <div style={{ opacity: enabled.creditsPerTurn ? 1 : 0.45 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                    <Dot on={enabled.creditsPerTurn} onClick={() => toggle("creditsPerTurn")} />
+                    <span onClick={() => toggle("creditsPerTurn")} style={{ textDecoration: enabled.creditsPerTurn ? "none" : "line-through", cursor: "pointer" }}>
+                      每輪對話消耗點數
+                    </span>
+                    <button onClick={() => setCreditsPerTurnOverride(!creditsPerTurnOverride)}
+                      style={{
+                        marginLeft: "auto",
+                        background: creditsPerTurnOverride ? "#f59e0b" : "#f1f5f9",
+                        color: creditsPerTurnOverride ? "#ffffff" : "#64748b",
+                        border: "none", borderRadius: 6, padding: "2px 7px",
+                        fontSize: 9, fontWeight: 600, cursor: "pointer",
+                      }}>{creditsPerTurnOverride ? "✓ 手動覆寫" : "手動覆寫"}</button>
                   </div>
+                  {creditsPerTurnOverride ? (
+                    <>
+                      <input value={creditsPerTurn} onChange={e => setCreditsPerTurn(e.target.value)} disabled={!enabled.creditsPerTurn}
+                        style={{
+                          background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: 8,
+                          padding: "6px 10px", fontSize: 22, fontWeight: 700, color: "#1a202c",
+                          width: 90, outline: "none",
+                        }} />
+                      <span style={{ fontSize: 11, color: "#64748b", marginLeft: 6 }}>點/輪</span>
+                      <div style={{ display: "flex", gap: 3, marginTop: 6, flexWrap: "wrap" }}>
+                        {[{ l: "20", v: "20" }, { l: "50", v: "50" }, { l: "100", v: "100" }, { l: "200", v: "200" }].map(c => (
+                          <Chip key={c.v} label={c.l + "點"} active={creditsPerTurn === c.v} onClick={() => setCreditsPerTurn(c.v)} color="#34d399" />
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 26, fontWeight: 700, color: "#34d399" }}>
+                        {autoCreditsPerTurn} <span style={{ fontSize: 12, color: "#64748b", fontWeight: 500 }}>點/輪</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 4, lineHeight: 1.5 }}>
+                        US${observedUsdPerTurn.toFixed(4)} × {exchangeRate} ÷ NT${baselineNtdPerPoint.toFixed(4)}/點
+                      </div>
+                      <div style={{ fontSize: 9, color: "#cbd5e1", marginTop: 2 }}>
+                        來自上方「每輪對話實際總成本」；基準 <b style={{ color: "#94a3b8" }}>{baselineName || "—"}</b>，1 點 = {baseUnit} tokens
+                      </div>
+                    </>
+                  )}
                 </div>
                 <div>
                   <NumInput label="月均消耗點數（每位活躍用戶）" value={creditsPerMonthPerUser} onChange={setCreditsPerMonthPerUser} suffix="點/月" width={70} small
